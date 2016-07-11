@@ -1,5 +1,5 @@
 package th_tools
-/*
+
 import (
 	"crypto/sha512"
 	"encoding/json"
@@ -21,6 +21,13 @@ type AccountSQL struct {
     DateCreated string `db:"date_created"`
     Token       string
 	System      int
+}
+
+func (a *AccountSQL) ConvertPassword() {
+	// convert password to SHA512
+	h := sha512.New()
+	io.WriteString(h, a.Password)
+	a.Password = fmt.Sprintf("%x", h.Sum(nil))
 }
 
 func (a AccountSQL) Validate(w http.ResponseWriter, r *http.Request) {
@@ -101,7 +108,7 @@ func (a AccountSQL) Validate(w http.ResponseWriter, r *http.Request) {
 					log.Println(err)
 				}
 
-				session.AccountSQL = accountSQLID
+				session.Account = accountSQLID
 
 				session.Insert(w, r)
 
