@@ -1,43 +1,53 @@
 package th_tools
 
 import (
-    "io"
-    "fmt"
-    "time"
-    "errors"
-    "net/http"
-    "encoding/json"
-    "crypto/sha512"
+	"crypto/sha512"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/ioutil"
+	"log"
+	"net/http"
+	"time"
 
-    "github.com/antonholmquist/jason"
-    "github.com/gorilla/sessions"
+	"github.com/dgrijalva/jwt-go"
 	"github.com/gorilla/context"
+	"github.com/gorilla/sessions"
+	"github.com/tidwall/gjson"
 
-    "gopkg.in/mgo.v2"
-    "gopkg.in/mgo.v2/bson"
-    "gopkg.in/boj/redistore.v1"
+	"gopkg.in/mgo.v2"
+	"gopkg.in/mgo.v2/bson"
 )
 
+type JWTSession struct {
+	ID  string
+	Exp time.Time
+	Iat time.Time
+}
+
 type System struct {
-    Id      bson.ObjectId   `bson:"_id,omitempty" json:"_id"`
-    Name    string
+	Id   bson.ObjectId `bson:"_id,omitempty" json:"_id"`
+	Name string
 }
 
 type AccountSystem struct {
-    Role        string
-    SystemId    bson.ObjectId   `bson:"systemId"`
-    Details     bson.M          `bson:",inline"`
+	Role     string
+	SystemId bson.ObjectId `bson:"systemId"`
+	Details  bson.M        `bson:",inline"`
 }
 
 type AccountMGO struct {
-    Id          bson.ObjectId       `bson:"_id,omitempty" json:"_id"`
-    Email       string
-    Password    string              `json:"-"`
-    IsActive    bool                `bson:"isActive"`
-    DateCreated time.Time           `bson:"dateCreated"`
-    Token       string              `bson:"resetToken"`
-    Systems     []AccountSystem     `bson:"systems"`
+	Id          bson.ObjectId `bson:"_id,omitempty" json:"_id"`
+	Email       string
+	Password    string          `json:"-"`
+	IsActive    bool            `bson:"isActive"`
+	DateCreated time.Time       `bson:"dateCreated"`
+	Token       string          `bson:"resetToken"`
+	Systems     []AccountSystem `bson:"systems"`
 }
+
+var store = sessions.NewCookieStore([]byte("something-very-secret"))
 
 func (a *AccountMGO) ConvertPassword() {
 	// convert password to SHA512
@@ -46,107 +56,185 @@ func (a *AccountMGO) ConvertPassword() {
 	a.Password = fmt.Sprintf("%x", h.Sum(nil))
 }
 
-func(a *AccountMGO) Sanitize(values *jason.Object, confirm bool) (error) {
+func (a *AccountMGO) Sanitize(account gjson.Result, confirm bool) error {
 
-    // TODO actual validation
-    email, _ := values.GetString("Email")
-    password, _ := values.GetString("Password")
-    passwordConfirm, _ := values.GetString("PasswordConfirm")
+	// TODO actual validation
+	email := account.Get("Email").Str
+	password := account.Get("Password").Str
 
-    a.Email = email
+	a.Email = email
 
-    if true == confirm {
-        if password != passwordConfirm {
-            return errors.New("Password != PasswordConfirm")
-        }
-    }
+	if true == confirm {
+		passwordConfirm := account.Get("PasswordConfirm").Str
 
-    a.Password = password
-    a.ConvertPassword()
+		if password != passwordConfirm {
+			return errors.New("Password != PasswordConfirm")
+		}
+	}
 
-    return nil
+	a.Password = password
+	a.ConvertPassword()
+
+	return nil
 }
 
-func(a AccountMGO) Validate(w http.ResponseWriter, r *http.Request) (string, interface{}, error) {
+func (a AccountMGO) Validate(w http.ResponseWriter, r *http.Request) (string, interface{}, error) {
 
-    response := Response{}
+	response := Response{}
 	response.Status = "error"
 	response.Body = "Het inloggen is mislukt."
 
-    values, err := jason.NewObjectFromReader(r.Body)
-    if err != nil {
-        return "json", response, err
-    }
+	body, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		return "json", response, err
+	}
+	account := gjson.Parse(string(body))
 
-    a.Sanitize(values, false)
+	a.Sanitize(account, false)
 
-    db := context.Get(r, "mongodb").(*mgo.Session)
-    c := db.DB("auth").C("accounts")
+	db := context.Get(r, "mongodb").(*mgo.Session)
+	c := db.DB("quran").C("accounts")
 
-    err = c.Find(bson.M{ "email" : a.Email, "password" : a.Password }).One(&a)
-    if err != nil {
-        return "json", response, err
-    }
+	err = c.Find(bson.M{"email": a.Email, "password": a.Password}).One(&a)
+	if err != nil {
+		return "json", response, err
+	}
 
-    store := context.Get(r, "session-store").(*redistore.RediStore)
-    // Get a session.
-    session, err := store.Get(r, "session-key")
-    if err != nil {
-        fmt.Println(err.Error())
-    }
+	config := context.Get(r, "config").([]byte)
+	secret := []byte(gjson.GetBytes(config, "secret").String())
 
-    session.Values["account"] = a.Id.Hex()
+	now := time.Now()
+	duration, _ := time.ParseDuration("1h")
+	expire := now.Add(duration).Unix()
 
-    if err = session.Save(r, w); err != nil {
-        fmt.Printf("Error saving session: %v\n", err)
-    }
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"_id": a.Id.String(),
+		"iat": now,
+		"exp": expire,
+	})
 
-    response.Success(a)
+	// Sign and get the complete encoded token as a string using the secret
+	tokenString, err := token.SignedString(secret)
+	if err != nil {
+		return "json", response, err
+	}
 
-    return "json", response, nil
+	session, err := store.Get(r, "session")
+	if err != nil {
+		return "json", response, err
+	}
+
+	session.Options = &sessions.Options{
+		Path:     "/",
+		MaxAge:   int(expire),
+		HttpOnly: true,
+	}
+	session.Values["access_token"] = tokenString
+	session.Save(r, w)
+
+	response.Success(tokenString)
+
+	return "json", response, nil
 }
 
-func check(r *http.Request) bool {
-    store := context.Get(r, "session-store").(*redistore.RediStore)
-    // Get a session.
-    session, err := store.Get(r, "session-key")
-    if err != nil {
-        fmt.Println(err.Error())
-    }
+func check(secret []byte, tokenString string) (jwt.MapClaims, error) {
+	// Parse the token
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		// since we only use the one private key to sign the tokens,
+		// we also only use its public counter part to verify
+		return secret, nil
+	})
 
-    if session.Values["account"] != nil {
-        return true
-    }
+	if err != nil && err.Error() != "Token is expired" {
+		return nil, err
+	}
 
-    return false
+	claims := token.Claims.(jwt.MapClaims)
+
+	return claims, nil
 }
 
 func (a AccountMGO) Check(w http.ResponseWriter, r *http.Request) (string, interface{}, error) {
 
-    response := Response{}
+	response := Response{}
 	response.Status = "error"
 	response.Body = "U bent niet ingelogd."
 
-    if check(r) {
-        response.Success("U bent al ingelogd.")
-    }
+	var tokenString string
+	tokenString = r.URL.Query().Get("access_token")
 
-    return "json", response, nil
+	session, err := store.Get(r, "session")
+	if err != nil {
+		return "json", response, err
+	}
+
+	if session.Values["access_token"] != nil {
+		tokenString = session.Values["access_token"].(string)
+	}
+
+	if len(tokenString) > 0 {
+		config := context.Get(r, "config").([]byte)
+		secret := []byte(gjson.GetBytes(config, "secret").String())
+
+		claims, err := check(secret, tokenString)
+		//log.Println(claims)
+
+		if err != nil {
+			return "json", response, err
+		}
+
+		expire := claims["exp"].(float64)
+		tm := time.Unix(int64(expire), 0)
+		now := time.Now()
+
+		//log.Println("exp", tm)
+
+		if tm.Before(now) {
+			log.Println("expired, generating new token")
+
+			duration, _ := time.ParseDuration("1h")
+
+			claims["iat"] = now
+			claims["exp"] = now.Add(duration).Unix()
+
+			token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+
+			// Sign and get the complete encoded token as a string using the secret
+			tokenString, _ = token.SignedString(secret)
+
+			response.Success(tokenString)
+		}
+
+		response.Success(tokenString)
+
+		session.Values["access_token"] = tokenString
+		session.Save(r, w)
+	}
+
+	return "json", response, nil
 }
 
+// TODO cookie based auth
 func (a AccountMGO) RequireLogin(next http.Handler) http.Handler {
-    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
-        if check(r) {
-            next.ServeHTTP(w, r)
-        }
+		var tokenString string
+		tokenString = r.URL.Query().Get("access_token")
 
-        response := Response{}
-        response.Status = "error"
-        response.Body = "U bent niet ingelogd of uw sessie is verlopen."
+		config := context.Get(r, "Config").([]byte)
+		secret := []byte(gjson.GetBytes(config, "secret").String())
 
-        json.NewEncoder(w).Encode(response)
-    })
+		_, err := check(secret, tokenString)
+		if err != nil {
+			next.ServeHTTP(w, r)
+		}
+
+		response := Response{}
+		response.Status = "error"
+		response.Body = "U bent niet ingelogd of uw sessie is verlopen."
+
+		json.NewEncoder(w).Encode(response)
+	})
 }
 
 func (a AccountMGO) Register(w http.ResponseWriter, r *http.Request) (string, interface{}, error) {
@@ -155,74 +243,47 @@ func (a AccountMGO) Register(w http.ResponseWriter, r *http.Request) (string, in
 	response.Status = "error"
 	response.Body = "De registratie is mislukt."
 
-    values, err := jason.NewObjectFromReader(r.Body)
-    if err != nil {
-        return "json", response, err
-    }
+	/*
+		values, err := jason.NewObjectFromReader(r.Body)
+		if err != nil {
+			return "json", response, err
+		}
 
-	if false == check(r) {
+		if false == check(r) {
 
-        db := context.Get(r, "mongodb").(*mgo.Session)
-        accounts := db.DB("auth").C("accounts")
-        systems := db.DB("auth").C("systems")
+			db := context.Get(r, "mongodb").(*mgo.Session)
+			accounts := db.DB("auth").C("accounts")
+			systems := db.DB("auth").C("systems")
 
-        err = a.Sanitize(values, true)
-        if err != nil {
-            response.Error("Uw wachtwoord komt niet overeen met de verificatie.")
-            return "json", response, err
-        }
+			err = a.Sanitize(values, true)
+			if err != nil {
+				response.Error("Uw wachtwoord komt niet overeen met de verificatie.")
+				return "json", response, err
+			}
 
-        a.IsActive = true
-        a.DateCreated = time.Now()
+			a.IsActive = true
+			a.DateCreated = time.Now()
 
-        s := System{}
-        systems.Find(bson.M{ "name" : context.Get(r, "system").(string) }).One(&s)
+			s := System{}
+			systems.Find(bson.M{"name": context.Get(r, "system").(string)}).One(&s)
 
-        a.Systems = []AccountSystem{AccountSystem{
-            Role : "user",
-            SystemId : s.Id,
-            Details : bson.M{},
-        }}
+			a.Systems = []AccountSystem{AccountSystem{
+				Role:     "user",
+				SystemId: s.Id,
+				Details:  bson.M{},
+			}}
 
-		err = accounts.Insert(a)
-        if err != nil {
-            return "json", response, err
-        }
+			err = accounts.Insert(a)
+			if err != nil {
+				return "json", response, err
+			}
 
-        response.Success("U bent successvol geregistreerd.")
+			response.Success("U bent successvol geregistreerd.")
 
-	} else {
-		response.Error("U heeft al een account.")
-	}
-
-	return "json", response, nil
-}
-
-func (a AccountMGO) Logout(w http.ResponseWriter, r *http.Request) (string, interface{}, error) {
-
-	response := Response{}
-	response.Status = "error"
-	response.Body = "U bent niet ingelogd."
-
-	if true == check(r) {
-
-        store := context.Get(r, "session-store").(*redistore.RediStore)
-        // Get a session.
-        session, err := store.Get(r, "session-key")
-        if err != nil {
-            fmt.Println(err.Error())
-        }
-
-        session.Options = &sessions.Options{
-    		Path:     "/",
-    		MaxAge:   -1,
-    		HttpOnly: true,
-    	}
-    	// Save it.
-    	session.Save(r, w)
-
-        response.Success("U bent successvol uitgelogd.")
-	}
+		} else {
+			response.Error("U heeft al een account.")
+		}
+	*/
 
 	return "json", response, nil
 }

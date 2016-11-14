@@ -1,27 +1,19 @@
 package th_tools
 
 import (
-    "os"
-    "log"
-
-    "github.com/antonholmquist/jason"
+	"io/ioutil"
+	"log"
 )
 
-type Config struct {}
+type Config struct{}
 
-func (c Config) Read() *jason.Object {
+func (c Config) Read() []byte {
 
-    file, err := os.Open("config.json")
+	data, err := ioutil.ReadFile("config.json")
 
-    if err != nil {
-        log.Fatal(err)
-    }
+	if err != nil {
+		log.Fatal(err)
+	}
 
-    values, err := jason.NewObjectFromReader(file)
-
-    if err != nil {
-        log.Println(err)
-    }
-
-    return values
+	return data
 }
