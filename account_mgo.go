@@ -221,19 +221,37 @@ func (a AccountMGO) RequireLogin(next http.Handler) http.Handler {
 		var tokenString string
 		tokenString = r.URL.Query().Get("access_token")
 
-		config := context.Get(r, "Config").([]byte)
+		config := context.Get(r, "config").([]byte)
 		secret := []byte(gjson.GetBytes(config, "secret").String())
 
-		_, err := check(secret, tokenString)
+		session, err := store.Get(r, "session")
 		if err != nil {
 			next.ServeHTTP(w, r)
 		}
 
-		response := Response{}
-		response.Status = "error"
-		response.Body = "U bent niet ingelogd of uw sessie is verlopen."
+		if session.Values["access_token"] != nil {
+			tokenString = session.Values["access_token"].(string)
+		}
 
-		json.NewEncoder(w).Encode(response)
+		claims, err := check(secret, tokenString)
+		if err != nil {
+			next.ServeHTTP(w, r)
+		}
+
+		expire := claims["exp"].(float64)
+		tm := time.Unix(int64(expire), 0)
+		now := time.Now()
+
+		if tm.Before(now) {
+			response := Response{}
+
+			response.Status = "error"
+			response.Body = "U bent niet ingelogd of uw sessie is verlopen."
+
+			json.NewEncoder(w).Encode(response)
+		} else {
+			next.ServeHTTP(w, r)
+		}
 	})
 }
 
