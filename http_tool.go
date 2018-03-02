@@ -88,22 +88,22 @@ func (ht HttpTool) Route(listener net.Listener, logFile io.Writer) {
 		    }
 	*/
 
-	nocache := func(next http.Handler) http.Handler {
-		fn := func(w http.ResponseWriter, r *http.Request) {
-			// 1000 * 60 = 60000 = 60 seconds / 1 minute
-			// 1000 * 60 * 60 = 3600000 = 1 hour
-			// 1000 * 60 * 60 * 24 = 86400000 = 24 hours / 1 day
-			// 1000 * 60 * 60 * 24 * 30 = 2592000000 = 30 days
-			w.Header().Set("Cache-control", "no-cache, no-store, must-revalidate")
-			w.Header().Set("Pragma", "no-cache")
-			w.Header().Set("Expires ", "0")
-			next.ServeHTTP(w, r)
-		}
-		return http.HandlerFunc(fn)
-	}
-
-	ht.Router.PathPrefix("/").Handler(nocache(gziphandler.GzipHandler(http.FileServer(http.Dir("./public/")))))
-	http.Handle("/", ht.Router)
+	// nocache := func(next http.Handler) http.Handler {
+	// 	fn := func(w http.ResponseWriter, r *http.Request) {
+	// 		// 1000 * 60 = 60000 = 60 seconds / 1 minute
+	// 		// 1000 * 60 * 60 = 3600000 = 1 hour
+	// 		// 1000 * 60 * 60 * 24 = 86400000 = 24 hours / 1 day
+	// 		// 1000 * 60 * 60 * 24 * 30 = 2592000000 = 30 days
+	// 		w.Header().Set("Cache-control", "no-cache, no-store, must-revalidate")
+	// 		w.Header().Set("Pragma", "no-cache")
+	// 		w.Header().Set("Expires ", "0")
+	// 		next.ServeHTTP(w, r)
+	// 	}
+	// 	return http.HandlerFunc(fn)
+	// }
+    //
+	// ht.Router.PathPrefix("/").Handler(nocache(gziphandler.GzipHandler(http.FileServer(http.Dir("./public/")))))
+	// http.Handle("/", ht.Router)
 
 	log.Println(fmt.Sprintf("Listening"))
 	http.Serve(listener, nil)
