@@ -9,6 +9,7 @@ import (
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 	"github.com/nytimes/gziphandler"
+	"net"
 )
 
 type HttpTool struct {
@@ -57,7 +58,7 @@ func (ht *HttpTool) Handle(route string, handler http.Handler) {
 	ht.Router.Handle(route, handler)
 }
 
-func (ht HttpTool) Route(logFile io.Writer, port string) {
+func (ht HttpTool) Route(listener net.Listener, logFile io.Writer) {
 
 	for method := range ht.Methods {
 
@@ -104,6 +105,6 @@ func (ht HttpTool) Route(logFile io.Writer, port string) {
 	ht.Router.PathPrefix("/").Handler(nocache(gziphandler.GzipHandler(http.FileServer(http.Dir("./public/")))))
 	http.Handle("/", ht.Router)
 
-	log.Println(fmt.Sprintf("Listening at port %s...", port))
-	http.ListenAndServe(":"+port, nil)
+	log.Println(fmt.Sprintf("Listening"))
+	http.Serve(listener, nil)
 }

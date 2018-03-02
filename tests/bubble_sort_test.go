@@ -3,7 +3,7 @@ package tests
 import (
 	"github.com/stretchr/testify/assert"
 	"testing"
-	tools "th_tools"
+	tools "bitbucket.org/taushif/th_tools"
 )
 
 func TestSortInt(t *testing.T) {

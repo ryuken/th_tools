@@ -21,5 +21,7 @@ func (fn AppHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(resp)
 	} else if "plain" == format {
 		w.Write([]byte(resp.(string)))
-	}
+	} else if "bytes" == format {
+       w.Write(resp.([]byte))
+   }
 }
