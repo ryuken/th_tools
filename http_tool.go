@@ -8,17 +8,18 @@ import (
 
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
-	"github.com/nytimes/gziphandler"
+
+	//"github.com/NYTimes/gziphandler"
 	"net"
 )
 
 type HttpTool struct {
 	Methods map[string]map[string]http.Handler
-    Router *mux.Router
+	Router  *mux.Router
 }
 
 func (ht *HttpTool) Init() {
-    ht.Router = mux.NewRouter()
+	ht.Router = mux.NewRouter()
 	ht.Methods = make(map[string]map[string]http.Handler)
 }
 
@@ -101,7 +102,7 @@ func (ht HttpTool) Route(listener net.Listener, logFile io.Writer) {
 	// 	}
 	// 	return http.HandlerFunc(fn)
 	// }
-    //
+	//
 	// ht.Router.PathPrefix("/").Handler(nocache(gziphandler.GzipHandler(http.FileServer(http.Dir("./public/")))))
 	// http.Handle("/", ht.Router)
 
