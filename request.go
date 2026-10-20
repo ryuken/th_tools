@@ -45,7 +45,6 @@ func (r Request) Do(method string, uri string, form url.Values) (int, []byte, er
 
 	if form != nil {
 		req, err = http.NewRequest(method, uri, strings.NewReader(form.Encode()))
-		req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 	} else {
 		req, err = http.NewRequest(method, uri, nil)
 	}
@@ -54,13 +53,16 @@ func (r Request) Do(method string, uri string, form url.Values) (int, []byte, er
 		return 0, nil, err
 	}
 
+	if form != nil {
+		req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+	}
+
 	response, err := hc.Do(req)
-
-	defer response.Body.Close()
-
 	if err != nil {
 		return 0, nil, err
 	}
+
+	defer response.Body.Close()
 
 	contents, err := ioutil.ReadAll(response.Body)
 	if err != nil {
