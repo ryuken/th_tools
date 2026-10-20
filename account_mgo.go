@@ -12,12 +12,11 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v4"
-	"github.com/gorilla/context"
 	"github.com/gorilla/sessions"
 	"github.com/tidwall/gjson"
 
-	"gopkg.in/mgo.v2"
-	"gopkg.in/mgo.v2/bson"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
 type JWTSession struct {
@@ -27,18 +26,18 @@ type JWTSession struct {
 }
 
 type System struct {
-	Id   bson.ObjectId `bson:"_id,omitempty" json:"_id"`
+	Id   bson.ObjectID `bson:"_id,omitempty" json:"_id"`
 	Name string
 }
 
 type AccountSystem struct {
 	Role     string
-	SystemId bson.ObjectId `bson:"systemId"`
+	SystemId bson.ObjectID `bson:"systemId"`
 	Details  bson.M        `bson:",inline"`
 }
 
 type AccountMGO struct {
-	Id          bson.ObjectId `bson:"_id,omitempty" json:"_id"`
+	Id          bson.ObjectID `bson:"_id,omitempty" json:"_id"`
 	Email       string
 	Password    string          `json:"-"`
 	IsActive    bool            `bson:"isActive"`
@@ -58,7 +57,7 @@ func sessionStore(r *http.Request) (*sessions.CookieStore, error) {
 	defer storeMu.Unlock()
 
 	if store == nil {
-		config := context.Get(r, "config").([]byte)
+		config := Value(r, "config").([]byte)
 		key := gjson.GetBytes(config, "session_key").String()
 
 		if len(key) < 32 {
@@ -132,11 +131,12 @@ func (a AccountMGO) Validate(w http.ResponseWriter, r *http.Request) (string, in
 	a.Sanitize(account, false)
 	password := a.Password
 
-	db := context.Get(r, "mongodb").(*mgo.Session)
-	c := db.DB("quran").C("accounts")
+	db := Value(r, "mongodb").(*mongo.Client)
+	c := db.Database("quran").Collection("accounts")
 
-	err = c.Find(bson.M{"email": a.Email}).One(&a)
+	err = c.FindOne(r.Context(), bson.M{"email": a.Email}).Decode(&a)
 	if err != nil {
+		rejectPassword(password)
 		return "json", response, err
 	}
 
@@ -148,13 +148,13 @@ func (a AccountMGO) Validate(w http.ResponseWriter, r *http.Request) (string, in
 	if rehash {
 		// upgrade legacy SHA-512 hash to bcrypt
 		if hash, err := HashPassword(password); err == nil {
-			if err := c.UpdateId(a.Id, bson.M{"$set": bson.M{"password": hash}}); err != nil {
+			if _, err := c.UpdateByID(r.Context(), a.Id, bson.M{"$set": bson.M{"password": hash}}); err != nil {
 				log.Println(err)
 			}
 		}
 	}
 
-	config := context.Get(r, "config").([]byte)
+	config := Value(r, "config").([]byte)
 	secret := []byte(gjson.GetBytes(config, "secret").String())
 
 	now := time.Now()
@@ -162,7 +162,7 @@ func (a AccountMGO) Validate(w http.ResponseWriter, r *http.Request) (string, in
 	expire := now.Add(duration).Unix()
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"_id": a.Id.String(),
+		"_id": a.Id.Hex(),
 		"iat": now.Unix(),
 		"exp": expire,
 	})
@@ -236,7 +236,7 @@ func (a AccountMGO) Check(w http.ResponseWriter, r *http.Request) (string, inter
 	tokenString := accessToken(r, session)
 
 	if len(tokenString) > 0 {
-		config := context.Get(r, "config").([]byte)
+		config := Value(r, "config").([]byte)
 		secret := []byte(gjson.GetBytes(config, "secret").String())
 
 		_, err := check(secret, tokenString)
@@ -265,7 +265,7 @@ func (a AccountMGO) RequireLogin(next http.Handler) http.Handler {
 			json.NewEncoder(w).Encode(response)
 		}
 
-		config := context.Get(r, "config").([]byte)
+		config := Value(r, "config").([]byte)
 		secret := []byte(gjson.GetBytes(config, "secret").String())
 
 		store, err := sessionStore(r)
@@ -304,9 +304,9 @@ func (a AccountMGO) Register(w http.ResponseWriter, r *http.Request) (string, in
 
 		if false == check(r) {
 
-			db := context.Get(r, "mongodb").(*mgo.Session)
-			accounts := db.DB("auth").C("accounts")
-			systems := db.DB("auth").C("systems")
+			db := Value(r, "mongodb").(*mongo.Client)
+			accounts := db.Database("auth").Collection("accounts")
+			systems := db.Database("auth").Collection("systems")
 
 			err = a.Sanitize(values, true)
 			if err != nil {
@@ -323,7 +323,7 @@ func (a AccountMGO) Register(w http.ResponseWriter, r *http.Request) (string, in
 			a.DateCreated = time.Now()
 
 			s := System{}
-			systems.Find(bson.M{"name": context.Get(r, "system").(string)}).One(&s)
+			systems.FindOne(r.Context(), bson.M{"name": Value(r, "system").(string)}).Decode(&s)
 
 			a.Systems = []AccountSystem{AccountSystem{
 				Role:     "user",
@@ -331,7 +331,7 @@ func (a AccountMGO) Register(w http.ResponseWriter, r *http.Request) (string, in
 				Details:  bson.M{},
 			}}
 
-			err = accounts.Insert(a)
+			_, err = accounts.InsertOne(r.Context(), a)
 			if err != nil {
 				return "json", response, err
 			}

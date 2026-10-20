@@ -20,14 +20,8 @@ type Request struct{}
 func (r Request) Do(method string, uri string, form url.Values) (int, []byte, error) {
 
 	mTLSConfig := &tls.Config{
-		CipherSuites: []uint16{
-			tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
-		},
+		MinVersion: tls.VersionTLS12,
 	}
-
-	mTLSConfig.PreferServerCipherSuites = true
-	mTLSConfig.MinVersion = tls.VersionTLS10
-	mTLSConfig.MaxVersion = tls.VersionTLS10
 
 	tr := &http.Transport{
 		TLSClientConfig: mTLSConfig,

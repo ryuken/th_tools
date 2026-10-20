@@ -6,7 +6,6 @@ require (
 	github.com/dchest/uniuri v1.2.0
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/golang-jwt/jwt/v4 v4.5.2
-	github.com/gorilla/context v1.1.2
 	github.com/gorilla/handlers v1.5.2
 	github.com/gorilla/mux v1.8.1
 	github.com/gorilla/sessions v1.4.0
@@ -14,8 +13,8 @@ require (
 	github.com/mailru/easyjson v0.9.2
 	github.com/stretchr/testify v1.12.1
 	github.com/tidwall/gjson v1.20.0
+	go.mongodb.org/mongo-driver/v2 v2.9.2
 	golang.org/x/crypto v0.55.0
-	gopkg.in/mgo.v2 v2.0.0-20190816093944-a6b53ec6cb22
 )
 
 require (
@@ -23,9 +22,14 @@ require (
 	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/gorilla/securecookie v1.1.2 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
+	github.com/klauspost/compress v1.19.2 // indirect
 	github.com/tidwall/match v1.2.0 // indirect
 	github.com/tidwall/pretty v1.2.2 // indirect
+	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
+	github.com/xdg-go/scram v1.2.0 // indirect
+	github.com/xdg-go/stringprep v1.0.4 // indirect
+	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405 // indirect
-	gopkg.in/yaml.v2 v2.4.0 // indirect
+	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/text v0.41.0 // indirect
 )

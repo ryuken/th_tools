@@ -9,6 +9,15 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+// dummyHash is compared against when no account matches, so a login for an
+// unknown email takes as long as one with a wrong password
+const dummyHash = "$2a$10$WuGvpZrKQRHcy8/wc.6k6eUPaTaU5kGJVTJ6GbwnjG7vpTKzxNRdu"
+
+// rejectPassword spends the same time as checking a real bcrypt hash
+func rejectPassword(password string) {
+	bcrypt.CompareHashAndPassword([]byte(dummyHash), []byte(password))
+}
+
 // HashPassword returns a bcrypt hash of password
 func HashPassword(password string) (string, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)

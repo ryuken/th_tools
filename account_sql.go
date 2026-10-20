@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/gorilla/context"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -53,7 +52,7 @@ func (a AccountSQL) Validate(w http.ResponseWriter, r *http.Request) {
 		log.Println(err)
 	}
 
-	system := context.Get(r, "system").(int)
+	system := Value(r, "system").(int)
 
 	if system > 0 {
 
@@ -63,7 +62,7 @@ func (a AccountSQL) Validate(w http.ResponseWriter, r *http.Request) {
 
 		if valid, _ := session.IsValid(w, r); false == valid {
 
-			db := context.Get(r, "db").(*sqlx.DB)
+			db := Value(r, "db").(*sqlx.DB)
 
 			var (
 				accountSQLID uint
@@ -86,7 +85,9 @@ func (a AccountSQL) Validate(w http.ResponseWriter, r *http.Request) {
 				log.Println(err)
 			}
 
-			if accountSQLID != 0 {
+			if accountSQLID == 0 {
+				rejectPassword(a.Password)
+			} else {
 				ok, rehash := CheckPassword(hash, a.Password)
 
 				if !ok {
@@ -208,8 +209,7 @@ func (a AccountSQL) RequireLogin(next http.Handler) http.Handler {
 		valid, sess := session.IsValid(w, r)
 
 		if true == valid {
-			context.Set(r, "session", sess)
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(w, WithValue(r, "session", sess))
 		} else {
 
 			response := Response{}
@@ -239,7 +239,7 @@ func (a AccountSQL) Register(w http.ResponseWriter, r *http.Request) {
 
 		if false == session.IsValid(w, r) {
 
-			db := context.Get(r, "db").(*sqlx.DB)
+			db := Value(r, "db").(*sqlx.DB)
 
 			a.ConvertPassword()
 
