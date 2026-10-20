@@ -1,15 +1,12 @@
 package th_tools
 
 import (
-	"crypto/sha512"
+	"database/sql"
 	"encoding/json"
-	"fmt"
-	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
 
-	"github.com/gorilla/context"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -23,11 +20,15 @@ type AccountSQL struct {
 	System      int
 }
 
-func (a *AccountSQL) ConvertPassword() {
-	// convert password to SHA512
-	h := sha512.New()
-	io.WriteString(h, a.Password)
-	a.Password = fmt.Sprintf("%x", h.Sum(nil))
+func (a *AccountSQL) ConvertPassword() error {
+	hash, err := HashPassword(a.Password)
+	if err != nil {
+		return err
+	}
+
+	a.Password = hash
+
+	return nil
 }
 
 func (a AccountSQL) Validate(w http.ResponseWriter, r *http.Request) {
@@ -45,15 +46,13 @@ func (a AccountSQL) Validate(w http.ResponseWriter, r *http.Request) {
 		log.Println(err)
 	}
 
-	log.Println(string(body))
-
 	err = json.Unmarshal(body, &a)
 
 	if err != nil {
 		log.Println(err)
 	}
 
-	system := context.Get(r, "system").(int)
+	system := Value(r, "system").(int)
 
 	if system > 0 {
 
@@ -63,40 +62,45 @@ func (a AccountSQL) Validate(w http.ResponseWriter, r *http.Request) {
 
 		if valid, _ := session.IsValid(w, r); false == valid {
 
-			db := context.Get(r, "db").(*sqlx.DB)
+			db := Value(r, "db").(*sqlx.DB)
 
-			var accountSQLID uint
-			a.ConvertPassword()
+			var (
+				accountSQLID uint
+				hash         string
+			)
 
-			rows, err := db.Query(`
+			err := db.QueryRow(`
                 SELECT
-                    a.id
+                    a.id, a.password
                 FROM
                     auth.accounts a
                 INNER JOIN
                     auth.account_roles ar ON a.id = ar.account
                 WHERE
-                    email = ? AND password = ? AND ar.system = ? AND is_active = 1
-            `, a.Email, a.Password, a.System)
+                    email = ? AND ar.system = ? AND is_active = 1
+                LIMIT 1
+            `, a.Email, a.System).Scan(&accountSQLID, &hash)
 
-			if err != nil {
+			if err != nil && err != sql.ErrNoRows {
 				log.Println(err)
 			}
 
-			defer rows.Close()
+			if accountSQLID == 0 {
+				rejectPassword(a.Password)
+			} else {
+				ok, rehash := CheckPassword(hash, a.Password)
 
-			for rows.Next() {
-
-				if err := rows.Scan(&accountSQLID); err != nil {
-					log.Println(err)
+				if !ok {
+					accountSQLID = 0
+				} else if rehash {
+					// upgrade legacy SHA-512 hash to bcrypt
+					if hash, err := HashPassword(a.Password); err == nil {
+						if _, err := db.Exec("UPDATE auth.accounts SET password = ? WHERE id = ? LIMIT 1", hash, accountSQLID); err != nil {
+							log.Println(err)
+						}
+					}
 				}
 			}
-
-			if err := rows.Err(); err != nil {
-				log.Println(err)
-			}
-
-			log.Println(accountSQLID)
 
 			if 0 == accountSQLID {
 				response.Body = "U heeft of een verkeerde combinatie van email en wachtwoord ingevoerd of u heeft geen toegang tot dit systeem."
@@ -205,8 +209,7 @@ func (a AccountSQL) RequireLogin(next http.Handler) http.Handler {
 		valid, sess := session.IsValid(w, r)
 
 		if true == valid {
-			context.Set(r, "session", sess)
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(w, WithValue(r, "session", sess))
 		} else {
 
 			response := Response{}
@@ -236,11 +239,9 @@ func (a AccountSQL) Register(w http.ResponseWriter, r *http.Request) {
 
 		if false == session.IsValid(w, r) {
 
-			db := context.Get(r, "db").(*sqlx.DB)
+			db := Value(r, "db").(*sqlx.DB)
 
-			h := sha512.New()
-			io.WriteString(h, a.Password)
-			a.Password = fmt.Sprintf("%x", h.Sum(nil))
+			a.ConvertPassword()
 
 			result, err := db.Exec("INSERT INTO auth.AccountSQLs VALUES(null, ?, ?, 1, CURRENT_TIMESTAMP(), '')", a.Email, a.Password)
 

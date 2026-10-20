@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/gorilla/context"
 	"github.com/gorilla/sessions"
 	"github.com/jmoiron/sqlx"
 )
@@ -26,7 +25,7 @@ func (s *Session) New() {
 
 func (s *Session) Insert(w http.ResponseWriter, r *http.Request) {
 
-	db := context.Get(r, "db").(*sqlx.DB)
+	db := Value(r, "db").(*sqlx.DB)
 
 	log.Println("\tSession INSERT")
 
@@ -50,7 +49,7 @@ func (s *Session) Insert(w http.ResponseWriter, r *http.Request) {
 		log.Println(err)
 	}
 
-	store := context.Get(r, "session-store").(*sessions.CookieStore)
+	store := Value(r, "session-store").(*sessions.CookieStore)
 
 	session, _ := store.Get(r, "session-name")
 	// Set some session values.
@@ -67,12 +66,12 @@ func (s *Session) Insert(w http.ResponseWriter, r *http.Request) {
 
 func (s *Session) IsValid(w http.ResponseWriter, r *http.Request) (bool, Session) {
 
-	db := context.Get(r, "db").(*sqlx.DB)
+	db := Value(r, "db").(*sqlx.DB)
 
 	// Do garbage collection
 	go s.GC(db)
 
-	store := context.Get(r, "session-store").(*sessions.CookieStore)
+	store := Value(r, "session-store").(*sessions.CookieStore)
 
 	session, _ := store.Get(r, "session-name")
 
@@ -128,8 +127,8 @@ func (s *Session) IsValid(w http.ResponseWriter, r *http.Request) (bool, Session
 func (s *Session) Get(r *http.Request, key string) string {
 
 	log.Println("Session GET")
-	db := context.Get(r, "db").(*sqlx.DB)
-	store := context.Get(r, "session-store").(*sessions.CookieStore)
+	db := Value(r, "db").(*sqlx.DB)
+	store := Value(r, "session-store").(*sessions.CookieStore)
 
 	session, _ := store.Get(r, "session-name")
 
@@ -190,7 +189,7 @@ func (s *Session) Set(key string, value interface{}) {
 
 func (s *Session) Save(w http.ResponseWriter, r *http.Request) bool {
 
-	store := context.Get(r, "session-store").(*sessions.CookieStore)
+	store := Value(r, "session-store").(*sessions.CookieStore)
 	session, _ := store.Get(r, "session-name")
 
 	session.Options = &sessions.Options{
@@ -203,7 +202,7 @@ func (s *Session) Save(w http.ResponseWriter, r *http.Request) bool {
 
 	if "" != s.Token {
 
-		db := context.Get(r, "db").(*sqlx.DB)
+		db := Value(r, "db").(*sqlx.DB)
 
 		_, err := db.Exec("UPDATE auth.sessions SET data = ? WHERE token = ?", s.Data, s.Token)
 
@@ -225,7 +224,7 @@ func (s Session) GC(db *sqlx.DB) {
 
 func (s *Session) Destroy(w http.ResponseWriter, r *http.Request) {
 
-	store := context.Get(r, "session-store").(*sessions.CookieStore)
+	store := Value(r, "session-store").(*sessions.CookieStore)
 	session, _ := store.Get(r, "session-name")
 
 	session.Options = &sessions.Options{
@@ -237,7 +236,7 @@ func (s *Session) Destroy(w http.ResponseWriter, r *http.Request) {
 	session.Save(r, w)
 
 	if "" != session.Values["token"] {
-		db := context.Get(r, "db").(*sqlx.DB)
+		db := Value(r, "db").(*sqlx.DB)
 		db.Exec("DELETE FROM auth.sessions WHERE token = ?", session.Values["token"])
 	}
 }

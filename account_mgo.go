@@ -1,23 +1,22 @@
 package th_tools
 
 import (
-	"crypto/sha512"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v4"
-	"github.com/gorilla/context"
 	"github.com/gorilla/sessions"
 	"github.com/tidwall/gjson"
 
-	"gopkg.in/mgo.v2"
-	"gopkg.in/mgo.v2/bson"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
 type JWTSession struct {
@@ -27,18 +26,18 @@ type JWTSession struct {
 }
 
 type System struct {
-	Id   bson.ObjectId `bson:"_id,omitempty" json:"_id"`
+	Id   bson.ObjectID `bson:"_id,omitempty" json:"_id"`
 	Name string
 }
 
 type AccountSystem struct {
 	Role     string
-	SystemId bson.ObjectId `bson:"systemId"`
+	SystemId bson.ObjectID `bson:"systemId"`
 	Details  bson.M        `bson:",inline"`
 }
 
 type AccountMGO struct {
-	Id          bson.ObjectId `bson:"_id,omitempty" json:"_id"`
+	Id          bson.ObjectID `bson:"_id,omitempty" json:"_id"`
 	Email       string
 	Password    string          `json:"-"`
 	IsActive    bool            `bson:"isActive"`
@@ -47,13 +46,53 @@ type AccountMGO struct {
 	Systems     []AccountSystem `bson:"systems"`
 }
 
-var store = sessions.NewCookieStore([]byte("something-very-secret"))
+var (
+	storeMu sync.Mutex
+	store   *sessions.CookieStore
+)
 
-func (a *AccountMGO) ConvertPassword() {
-	// convert password to SHA512
-	h := sha512.New()
-	io.WriteString(h, a.Password)
-	a.Password = fmt.Sprintf("%x", h.Sum(nil))
+// sessionStore returns the cookie store, keyed with "session_key" from the config
+func sessionStore(r *http.Request) (*sessions.CookieStore, error) {
+	storeMu.Lock()
+	defer storeMu.Unlock()
+
+	if store == nil {
+		config := Value(r, "config").([]byte)
+		key := gjson.GetBytes(config, "session_key").String()
+
+		if len(key) < 32 {
+			return nil, errors.New("config: session_key must be at least 32 characters")
+		}
+
+		store = sessions.NewCookieStore([]byte(key))
+	}
+
+	return store, nil
+}
+
+// accessToken returns the JWT from the session cookie or the Authorization header
+func accessToken(r *http.Request, session *sessions.Session) string {
+	if token, ok := session.Values["access_token"].(string); ok && len(token) > 0 {
+		return token
+	}
+
+	header := r.Header.Get("Authorization")
+	if strings.HasPrefix(header, "Bearer ") {
+		return strings.TrimPrefix(header, "Bearer ")
+	}
+
+	return ""
+}
+
+func (a *AccountMGO) ConvertPassword() error {
+	hash, err := HashPassword(a.Password)
+	if err != nil {
+		return err
+	}
+
+	a.Password = hash
+
+	return nil
 }
 
 func (a *AccountMGO) Sanitize(account gjson.Result, confirm bool) error {
@@ -73,7 +112,6 @@ func (a *AccountMGO) Sanitize(account gjson.Result, confirm bool) error {
 	}
 
 	a.Password = password
-	a.ConvertPassword()
 
 	return nil
 }
@@ -91,16 +129,32 @@ func (a AccountMGO) Validate(w http.ResponseWriter, r *http.Request) (string, in
 	account := gjson.Parse(string(body))
 
 	a.Sanitize(account, false)
+	password := a.Password
 
-	db := context.Get(r, "mongodb").(*mgo.Session)
-	c := db.DB("quran").C("accounts")
+	db := Value(r, "mongodb").(*mongo.Client)
+	c := db.Database("quran").Collection("accounts")
 
-	err = c.Find(bson.M{"email": a.Email, "password": a.Password}).One(&a)
+	err = c.FindOne(r.Context(), bson.M{"email": a.Email}).Decode(&a)
 	if err != nil {
+		rejectPassword(password)
 		return "json", response, err
 	}
 
-	config := context.Get(r, "config").([]byte)
+	ok, rehash := CheckPassword(a.Password, password)
+	if !ok {
+		return "json", response, errors.New("invalid email or password")
+	}
+
+	if rehash {
+		// upgrade legacy SHA-512 hash to bcrypt
+		if hash, err := HashPassword(password); err == nil {
+			if _, err := c.UpdateByID(r.Context(), a.Id, bson.M{"$set": bson.M{"password": hash}}); err != nil {
+				log.Println(err)
+			}
+		}
+	}
+
+	config := Value(r, "config").([]byte)
 	secret := []byte(gjson.GetBytes(config, "secret").String())
 
 	now := time.Now()
@@ -108,13 +162,18 @@ func (a AccountMGO) Validate(w http.ResponseWriter, r *http.Request) (string, in
 	expire := now.Add(duration).Unix()
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"_id": a.Id.String(),
-		"iat": now,
+		"_id": a.Id.Hex(),
+		"iat": now.Unix(),
 		"exp": expire,
 	})
 
 	// Sign and get the complete encoded token as a string using the secret
 	tokenString, err := token.SignedString(secret)
+	if err != nil {
+		return "json", response, err
+	}
+
+	store, err := sessionStore(r)
 	if err != nil {
 		return "json", response, err
 	}
@@ -126,7 +185,7 @@ func (a AccountMGO) Validate(w http.ResponseWriter, r *http.Request) (string, in
 
 	session.Options = &sessions.Options{
 		Path:     "/",
-		MaxAge:   int(expire),
+		MaxAge:   int(duration.Seconds()),
 		HttpOnly: true,
 	}
 	session.Values["access_token"] = tokenString
@@ -140,12 +199,16 @@ func (a AccountMGO) Validate(w http.ResponseWriter, r *http.Request) (string, in
 func check(secret []byte, tokenString string) (jwt.MapClaims, error) {
 	// Parse the token
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		// since we only use the one private key to sign the tokens,
-		// we also only use its public counter part to verify
+		// tokens are signed with a shared HMAC secret, reject any other algorithm
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+
 		return secret, nil
 	})
 
-	if err != nil && err.Error() != "Token is expired" {
+	// expired tokens are rejected here as well (jwt.ErrTokenExpired)
+	if err != nil {
 		return nil, err
 	}
 
@@ -160,49 +223,25 @@ func (a AccountMGO) Check(w http.ResponseWriter, r *http.Request) (string, inter
 	response.Status = "error"
 	response.Body = "U bent niet ingelogd."
 
-	var tokenString string
-	tokenString = r.URL.Query().Get("access_token")
+	store, err := sessionStore(r)
+	if err != nil {
+		return "json", response, err
+	}
 
 	session, err := store.Get(r, "session")
 	if err != nil {
 		return "json", response, err
 	}
 
-	if session.Values["access_token"] != nil {
-		tokenString = session.Values["access_token"].(string)
-	}
+	tokenString := accessToken(r, session)
 
 	if len(tokenString) > 0 {
-		config := context.Get(r, "config").([]byte)
+		config := Value(r, "config").([]byte)
 		secret := []byte(gjson.GetBytes(config, "secret").String())
 
-		claims, err := check(secret, tokenString)
-		//log.Println(claims)
-
+		_, err := check(secret, tokenString)
 		if err != nil {
 			return "json", response, err
-		}
-
-		expire := claims["exp"].(float64)
-		tm := time.Unix(int64(expire), 0)
-		now := time.Now()
-
-		//log.Println("exp", tm)
-
-		if tm.Before(now) {
-			log.Println("expired, generating new token")
-
-			duration, _ := time.ParseDuration("1h")
-
-			claims["iat"] = now
-			claims["exp"] = now.Add(duration).Unix()
-
-			token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-
-			// Sign and get the complete encoded token as a string using the secret
-			tokenString, _ = token.SignedString(secret)
-
-			response.Success(tokenString)
 		}
 
 		response.Success(tokenString)
@@ -214,44 +253,40 @@ func (a AccountMGO) Check(w http.ResponseWriter, r *http.Request) (string, inter
 	return "json", response, nil
 }
 
-// TODO cookie based auth
 func (a AccountMGO) RequireLogin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
-		var tokenString string
-		tokenString = r.URL.Query().Get("access_token")
-
-		config := context.Get(r, "config").([]byte)
-		secret := []byte(gjson.GetBytes(config, "secret").String())
-
-		session, err := store.Get(r, "session")
-		if err != nil {
-			next.ServeHTTP(w, r)
-		}
-
-		if session.Values["access_token"] != nil {
-			tokenString = session.Values["access_token"].(string)
-		}
-
-		claims, err := check(secret, tokenString)
-		if err != nil {
-			next.ServeHTTP(w, r)
-		}
-
-		expire := claims["exp"].(float64)
-		tm := time.Unix(int64(expire), 0)
-		now := time.Now()
-
-		if tm.Before(now) {
+		deny := func() {
 			response := Response{}
 
 			response.Status = "error"
 			response.Body = "U bent niet ingelogd of uw sessie is verlopen."
 
 			json.NewEncoder(w).Encode(response)
-		} else {
-			next.ServeHTTP(w, r)
 		}
+
+		config := Value(r, "config").([]byte)
+		secret := []byte(gjson.GetBytes(config, "secret").String())
+
+		store, err := sessionStore(r)
+		if err != nil {
+			log.Println(err)
+			deny()
+			return
+		}
+
+		session, err := store.Get(r, "session")
+		if err != nil {
+			deny()
+			return
+		}
+
+		if _, err := check(secret, accessToken(r, session)); err != nil {
+			deny()
+			return
+		}
+
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -269,9 +304,9 @@ func (a AccountMGO) Register(w http.ResponseWriter, r *http.Request) (string, in
 
 		if false == check(r) {
 
-			db := context.Get(r, "mongodb").(*mgo.Session)
-			accounts := db.DB("auth").C("accounts")
-			systems := db.DB("auth").C("systems")
+			db := Value(r, "mongodb").(*mongo.Client)
+			accounts := db.Database("auth").Collection("accounts")
+			systems := db.Database("auth").Collection("systems")
 
 			err = a.Sanitize(values, true)
 			if err != nil {
@@ -279,11 +314,16 @@ func (a AccountMGO) Register(w http.ResponseWriter, r *http.Request) (string, in
 				return "json", response, err
 			}
 
+			err = a.ConvertPassword()
+			if err != nil {
+				return "json", response, err
+			}
+
 			a.IsActive = true
 			a.DateCreated = time.Now()
 
 			s := System{}
-			systems.Find(bson.M{"name": context.Get(r, "system").(string)}).One(&s)
+			systems.FindOne(r.Context(), bson.M{"name": Value(r, "system").(string)}).Decode(&s)
 
 			a.Systems = []AccountSystem{AccountSystem{
 				Role:     "user",
@@ -291,7 +331,7 @@ func (a AccountMGO) Register(w http.ResponseWriter, r *http.Request) (string, in
 				Details:  bson.M{},
 			}}
 
-			err = accounts.Insert(a)
+			_, err = accounts.InsertOne(r.Context(), a)
 			if err != nil {
 				return "json", response, err
 			}

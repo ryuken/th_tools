@@ -17,6 +17,8 @@ func (f FlexFetch) Select(db *sqlx.DB, sql string, params []interface{}) ([]inte
 		return nil, err
 	}
 
+	defer rows.Close()
+
 	columns, _ := rows.Columns()
 	count := len(columns)
 	values := make([]interface{}, count)
@@ -64,6 +66,8 @@ func (f FlexFetch) Get(db *sqlx.DB, sql string, params []interface{}) (map[strin
 	if err != nil {
 		return nil, err
 	}
+
+	defer rows.Close()
 
 	columns, _ := rows.Columns()
 	count := len(columns)

@@ -20,14 +20,8 @@ type Request struct{}
 func (r Request) Do(method string, uri string, form url.Values) (int, []byte, error) {
 
 	mTLSConfig := &tls.Config{
-		CipherSuites: []uint16{
-			tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
-		},
+		MinVersion: tls.VersionTLS12,
 	}
-
-	mTLSConfig.PreferServerCipherSuites = true
-	mTLSConfig.MinVersion = tls.VersionTLS10
-	mTLSConfig.MaxVersion = tls.VersionTLS10
 
 	tr := &http.Transport{
 		TLSClientConfig: mTLSConfig,
@@ -45,7 +39,6 @@ func (r Request) Do(method string, uri string, form url.Values) (int, []byte, er
 
 	if form != nil {
 		req, err = http.NewRequest(method, uri, strings.NewReader(form.Encode()))
-		req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 	} else {
 		req, err = http.NewRequest(method, uri, nil)
 	}
@@ -54,13 +47,16 @@ func (r Request) Do(method string, uri string, form url.Values) (int, []byte, er
 		return 0, nil, err
 	}
 
+	if form != nil {
+		req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+	}
+
 	response, err := hc.Do(req)
-
-	defer response.Body.Close()
-
 	if err != nil {
 		return 0, nil, err
 	}
+
+	defer response.Body.Close()
 
 	contents, err := ioutil.ReadAll(response.Body)
 	if err != nil {
